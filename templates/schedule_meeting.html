@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Schedule a Meeting</title>
+    <style>
+        #message {
+            margin-top: 20px;
+            font-weight: bold;
+        }
+        #share-button {
+            display: none;
+            margin-top: 20px;
+        }
+        #copy-button {
+            display: none;
+            margin-top: 10px;
+        }
+        #meeting-link {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Schedule a Meeting</h1>
+    <form id="schedule-meeting-form">
+        <label for="time">Meeting Time (UTC):</label>
+        <input type="datetime-local" id="time" name="time" required>
+        <button type="submit">Schedule Meeting</button>
+    </form>
+    <div id="message"></div>
+    <div id="meeting-link-container">
+        <span id="meeting-link"></span>
+        <button id="copy-button" onclick="copyMeetingLink()">Copy Link</button>
+    </div>
+    <button id="share-button" onclick="shareMeeting()">Share Meeting via Email</button>
+
+    <script>
+        document.getElementById('schedule-meeting-form').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            const time = document.getElementById('time').value;
+            const response = await fetch('/create-scheduled-meeting', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ time: time })
+            });
+            const result = await response.json();
+            if (response.ok) {
+                document.getElementById('message').textContent = result.message;
+                const meetingLink = document.getElementById('meeting-link');
+                const copyButton = document.getElementById('copy-button');
+                const shareButton = document.getElementById('share-button');
+                
+                meetingLink.textContent = result.url;
+                meetingLink.style.display = 'inline';
+                copyButton.style.display = 'inline';
+                shareButton.style.display = 'block';
+                shareButton.dataset.meetingId = result.id;
+            } else {
+                document.getElementById('message').textContent = `Failed to schedule meeting: ${result.error}`;
+            }
+        });
+
+        function copyMeetingLink() {
+            const meetingLink = document.getElementById('meeting-link').textContent;
+            navigator.clipboard.writeText(meetingLink).then(() => {
+                alert('Meeting link copied to clipboard');
+            }).catch(err => {
+                console.error('Failed to copy text: ', err);
+            });
+        }
+
+        function shareMeeting() {
+            const meetingId = document.getElementById('share-button').dataset.meetingId;
+            const shareUrl = document.getElementById('meeting-link').textContent;
+            const emailBody = `Join the meeting using the following link: ${shareUrl}`;
+            const mailtoLink = `mailto:?subject=Meeting Invitation&body=${encodeURIComponent(emailBody)}`;
+            window.location.href = mailtoLink;
+        }
+    </script>
+</body>
+</html>

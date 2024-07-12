@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Meeting Room</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+    <script src="https://unpkg.com/@daily-co/daily-js"></script>
+    <style>
+        #video-call {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .video-container {
+            width: 300px;
+            height: 200px;
+            background-color: #ccc;
+            margin: 10px;
+        }
+        video, audio {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <h1>Meeting Room</h1>
+    <div id="video-call"></div>
+
+    <script>
+        const socket = io.connect('http://localhost:5000');
+        const urlParams = new URLSearchParams(window.location.search);
+        const language = urlParams.get('language');
+        const roomId = "{{ room_id }}";
+
+        async function joinMeeting() {
+            const response = await fetch(`/get-room-url/${roomId}`, { method: 'GET' });
+            const room = await response.json();
+
+            if (!room.url) {
+                alert("Failed to join room. Please try again.");
+                return;
+            }
+
+            const callObject = window.DailyIframe.createCallObject();
+
+            callObject.join({ url: room.url, lang: language });
+
+            callObject.on('participant-joined', (event) => {
+                console.log('participant-joined', event);
+                handleParticipantJoinedOrUpdated(event);
+            });
+
+            callObject.on('participant-updated', (event) => {
+                console.log('participant-updated', event);
+                handleParticipantJoinedOrUpdated(event);
+            });
+
+            callObject.on('participant-left', (event) => {
+                console.log('participant-left', event);
+                handleParticipantLeft(event);
+            });
+
+            callObject.on('app-message', (event) => {
+                const { data } = event;
+                if (data.type === 'speech') {
+                    const text = data.text;
+                    const from_language = data.language;
+                    socket.emit('translate', { text: text, from_language: from_language, to_language: language });
+                }
+            });
+
+            socket.on('translated_text', (translatedText) => {
+                const utterance = new SpeechSynthesisUtterance(translatedText);
+                speechSynthesis.speak(utterance);
+            });
+
+            socket.on('translated_chat_message', (data) => {
+                displayTranslatedChatMessage(data.text);
+            });
+        }
+
+        function handleParticipantJoinedOrUpdated(event) {
+            const participantId = event.participant.session_id;
+            const isLocal = event.participant.local;
+            const tracks = event.participant.tracks;
+
+            if (!document.getElementById(`video-container-${participantId}`)) {
+                createVideoContainer(participantId);
+            }
+
+            if (!isLocal && !document.getElementById(`audio-${participantId}`)) {
+                createAudioElement(participantId);
+            }
+
+            Object.entries(tracks).forEach(([trackType, trackInfo]) => {
+                if (trackInfo.persistentTrack) {
+                    if (!(isLocal && trackType === 'audio')) {
+                        startOrUpdateTrack(trackType, trackInfo, participantId);
+                    }
+                } else {
+                    destroyTracks([trackType], participantId);
+                }
+
+                if (trackType === 'video') {
+                    updateVideoUi(trackInfo, participantId);
+                }
+
+                if (isLocal) {
+                    updateUiForDevicesState(trackType, trackInfo);
+                }
+            });
+        }
+
+        function handleParticipantLeft(event) {
+            const participantId = event.participant.session_id;
+            destroyTracks(['video', 'audio'], participantId);
+            const videoContainer = document.getElementById(`video-container-${participantId}`);
+            if (videoContainer) {
+                videoContainer.remove();
+            }
+        }
+
+        function startOrUpdateTrack(trackType, track, participantId) {
+            const selector = trackType === 'video' ? `#video-container-${participantId} video.video-element` : `audio-${participantId}`;
+            const trackEl = trackType === 'video' ? document.querySelector(selector) : document.getElementById(selector);
+
+            if (!trackEl) {
+                console.error(`${trackType} element does not exist for participant: ${participantId}`);
+                return;
+            }
+
+            const existingTracks = trackEl.srcObject?.getTracks();
+            const needsUpdate = !existingTracks?.includes(track.persistentTrack);
+
+            if (needsUpdate) {
+                trackEl.srcObject = new MediaStream([track.persistentTrack]);
+                trackEl.onloadedmetadata = () => {
+                    trackEl.play().catch(e => console.error(`Error playing ${trackType} for participant ${participantId}:`, e));
+                };
+            }
+        }
+
+        function updateVideoUi(track, participantId) {
+            let videoContainer = document.getElementById(`video-container-${participantId}`);
+            let videoEl = videoContainer.querySelector('video.video-element');
+
+            switch (track.state) {
+                case 'off':
+                case 'interrupted':
+                case 'blocked':
+                    videoEl.style.display = 'none';
+                    break;
+                case 'playable':
+                default:
+                    videoEl.style.display = '';
+                    break;
+            }
+        }
+
+        function destroyTracks(trackTypes, participantId) {
+            trackTypes.forEach(trackType => {
+                const elementId = `${trackType}-${participantId}`;
+                const element = document.getElementById(elementId);
+                if (element) {
+                    element.srcObject = null;
+                    element.parentNode.removeChild(element);
+                }
+            });
+        }
+
+        function createVideoContainer(participantId) {
+            const videoContainer = document.createElement('div');
+            videoContainer.id = `video-container-${participantId}`;
+            videoContainer.className = 'video-container';
+
+            const videoEl = document.createElement('video');
+            videoEl.className = 'video-element';
+            videoEl.autoplay = true;
+            videoEl.playsInline = true;
+            videoContainer.appendChild(videoEl);
+
+            document.getElementById('video-call').appendChild(videoContainer);
+        }
+
+        function createAudioElement(participantId) {
+            const audioEl = document.createElement('audio');
+            audioEl.id = `audio-${participantId}`;
+            audioEl.autoplay = true;
+            document.body.appendChild(audioEl);
+        }
+
+        function updateUiForDevicesState(trackType, trackInfo) {
+            if (trackType === 'video') {
+                document.getElementById('camera-state').textContent = `Camera: ${trackInfo.state === 'playable' ? 'On' : 'Off'}`;
+            } else if (trackType === 'audio') {
+                document.getElementById('mic-state').textContent = `Mic: ${trackInfo.state === 'playable' ? 'On' : 'Off'}`;
+            }
+        }
+
+        function displayTranslatedChatMessage(message) {
+            // Implement this function to display translated chat messages in your UI
+            console.log("Translated message: ", message);
+        }
+
+        joinMeeting();
+    </script>
+</body>
+</html>
