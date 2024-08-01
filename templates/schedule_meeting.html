@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spryy - Schedule a Meeting</title>
+</head>
+<body>
+    <h1>Schedule a Meeting</h1>
+    <label for="meetingTime">Meeting Time (UTC):</label>
+    <input type="datetime-local" id="meetingTime">
+    <button onclick="scheduleMeeting()">Schedule Meeting</button>
+
+    <div id="message"></div>
+
+    <div id="meeting-link-container" style="display: none;">
+        <p>Meeting Link: <span id="meeting-link"></span></p>
+        <button onclick="copyLink()">Copy Link</button>
+    </div>
+
+    <button onclick="shareViaEmail()" style="display: none;">Share Meeting via Email</button>
+
+    <script>
+        async function scheduleMeeting() {
+            const meetingTime = document.getElementById('meetingTime').value;
+            const response = await fetch('/create-scheduled-meeting', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ time: meetingTime }),
+            });
+            const data = await response.json();
+            if (data.error) {
+                document.getElementById('message').textContent = `Error: ${data.error}`;
+            } else {
+                document.getElementById('message').textContent = 'Meeting scheduled successfully!';
+                document.getElementById('meeting-link').textContent = data.url;
+                document.getElementById('meeting-link-container').style.display = 'block';
+                document.querySelector('button[onclick="shareViaEmail()"]').style.display = 'block';
+            }
+        }
+
+        function copyLink() {
+            const linkText = document.getElementById('meeting-link').textContent;
+            navigator.clipboard.writeText(linkText).then(() => {
+                alert('Link copied to clipboard!');
+            });
+        }
+
+        function shareViaEmail() {
+            const linkText = document.getElementById('meeting-link').textContent;
+            const subject = 'Invitation to Spryy Meeting';
+            const body = `Join our Spryy meeting using this link: ${linkText}`;
+            window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+        }
+    </script>
+</body>
+</html>

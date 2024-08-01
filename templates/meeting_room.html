@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spryy - Meeting Room</title>
+    <script crossorigin src="https://unpkg.com/@daily-co/daily-js"></script>
+</head>
+<body>
+    <h1>Meeting Room</h1>
+    <div id="video-call"></div>
+
+    <script>
+        const roomId = '{{ room_id }}';
+        const language = '{{ language }}';
+
+        async function joinCall() {
+            const response = await fetch(`/get-room-url/${roomId}`);
+            const data = await response.json();
+            const roomUrl = data.url;
+
+            const callFrame = window.DailyIframe.createFrame({
+                iframeStyle: {
+                    width: '100%',
+                    height: '100%',
+                    border: '0',
+                    position: 'fixed',
+                    top: '0',
+                    left: '0'
+                },
+                showLeaveButton: true
+            });
+
+            await callFrame.join({ url: roomUrl });
+
+            // Set up real-time translation
+            const socket = io();
+            socket.emit('set_language', { language: language });
+            socket.emit('start_translation', { user_id: socket.id, from_language: 'en', to_language: language });
+
+            socket.on('translated_text', (translatedText) => {
+                console.log('Translated:', translatedText);
+                // Display the translated text in the UI
+            });
+        }
+
+        joinCall();
+    </script>
+</body>
+</html>
