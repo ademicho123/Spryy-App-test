@@ -1,119 +1,125 @@
+from flask import Flask, request, jsonify, send_file
+import soundfile as sf
+import numpy as np
+import tempfile
 import os
-from flask import Flask, request, jsonify, render_template
-from flask_socketio import SocketIO, emit
-import logging
-import requests
-from datetime import datetime
-from dotenv import load_dotenv
-from translator import translate_text, real_time_translate_audio, user_languages
-import daily
-from daily import CallClient
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Set up logging
-logging.basicConfig(level=logging.DEBUG)
+from translator_MT import MarianTranslator
+from translator_V1 import process_audio, transcribe, load_model
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Get API keys from environment variables
-DAILY_API_KEY = os.getenv('DAILY_API_KEY')
-DAILY_API_URL = 'https://api.daily.co/v1/rooms'
-
-# Initialize Daily context
-daily.daily_core_context_create()
-
-# Initialize Daily client
-daily_client = CallClient()
-
-# Helper function to create a room using the REST API
-def create_daily_room(properties=None):
-    headers = {
-        'Authorization': f'Bearer {DAILY_API_KEY}',
-        'Content-Type': 'application/json'
-    }
-    data = properties if properties else {}
-    response = requests.post(DAILY_API_URL, headers=headers, json=data)
-    response.raise_for_status()
-    return response.json()
-
-@app.route('/')
-def home():
-    return render_template('index.html')
-
-@app.route('/dashboard')
-def dashboard():
-    return render_template('dashboard.html')
-
-@app.route('/create-instant-meeting', methods=['POST'])
-def create_instant_meeting():
-    try:
-        room = create_daily_room()
-        return jsonify({'id': room['name'], 'url': room['url']})
-    except Exception as e:
-        logging.error(f"Failed to create instant meeting room: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/schedule-meeting', methods=['GET'])
-def schedule_meeting_page():
-    return render_template('schedule_meeting.html')
-
-@app.route('/create-scheduled-meeting', methods=['POST'])
-def create_scheduled_meeting():
-    data = request.json
-    meeting_time = int(datetime.fromisoformat(data.get('time')).timestamp())
-    try:
-        room = create_daily_room(properties={'exp': meeting_time, 'properties': {'enable_knocking': False}})
-        return jsonify({'id': room['name'], 'url': room['url']})
-    except Exception as e:
-        logging.error(f"Failed to create scheduled meeting room: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/meeting_language/<meeting_id>', methods=['GET'])
-def meeting_language_selection(meeting_id):
-    return render_template('meeting_lang.html', meeting_id=meeting_id)
-
-@app.route('/meeting_room/<room_id>', methods=['GET'])
-def meeting_room(room_id):
-    language = request.args.get('language', 'en')  # Default to English if not provided
-    return render_template('meeting_room.html', room_id=room_id, language=language)
-
-@app.route('/get-room-url/<room_id>', methods=['GET'])
-def get_room_url(room_id):
-    headers = {
-        'Authorization': f'Bearer {DAILY_API_KEY}',
-        'Content-Type': 'application/json'
-    }
-    response = requests.get(f'{DAILY_API_URL}/{room_id}', headers=headers)
-    if response.status_code == 200:
-        room_details = response.json()
-        return jsonify({'url': room_details['url']})
+@app.route('/translate/text', methods=['POST'])
+def text_translation():
+    """Flexible text translation API"""
+    # Try JSON first
+    if request.is_json:
+        data = request.get_json()
     else:
-        logging.error(f"Failed to get room URL: {response.status_code}, {response.text}")
-        return jsonify(response.json()), response.status_code
+        # Try form data if JSON fails
+        data = request.form
 
-@socketio.on('set_language')
-def handle_set_language(data):
-    user_id = request.sid  # Unique session ID for the connected user
-    user_languages[user_id] = data['language']
-    logging.info(f"User {user_id} set language to {data['language']}")
+    text = data.get('text')
+    source_language = data.get('source_language', 'en')
+    target_language = data.get('target_language', 'es')
 
-@socketio.on('start_translation')
-def handle_start_translation(data):
-    user_id = data['user_id']
-    from_language = data['from_language']
-    to_language = data['to_language']
-    real_time_translate_audio(from_language, to_language, user_id)
+    if not text:
+        return jsonify({'error': 'Missing text'}), 400
+    if not target_language:
+        return jsonify({'error': 'Missing target language'}), 400
 
-@socketio.on('translate')
-def handle_translate(data):
-    text = data['text']
-    from_language = data['from_language']
-    to_language = data['to_language']
-    translated_text = translate_text(text, to_language)
-    emit('translated_chat_message', {'text': translated_text}, room=request.sid)
+    try:
+        translator = MarianTranslator(source_language, target_language)
+        translated_text = translator.translate(text)
+        return jsonify({'translated_text': translated_text})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-if __name__ == "__main__":
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+@app.route('/translate/speech', methods=['POST'])
+def speech_translation():
+    """Speech translation API"""
+    if 'audio_file' not in request.files:
+        return jsonify({'error': 'No audio file uploaded'}), 400
+    
+    audio_file = request.files['audio_file']
+    source_language = request.form.get('source_language', 'en')
+    target_language = request.form.get('target_language', 'es')
+    
+    try:
+        # Create temporary files
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as input_temp, \
+             tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as output_temp:
+            audio_file.save(input_temp.name)
+            
+            # Process audio translation
+            process_audio(input_temp.name, target_language, output_temp.name)
+            
+            # Return the translated audio file
+            return send_file(output_temp.name, mimetype='audio/mpeg')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        # Clean up temporary files
+        try:
+            os.unlink(input_temp.name)
+            os.unlink(output_temp.name)
+        except:
+            pass
+
+@app.route('/transcribe/speech', methods=['POST'])
+def speech_to_text():
+    """Speech-to-Text Transcription API"""
+    if 'audio_file' not in request.files:
+        return jsonify({'error': 'No audio file uploaded'}), 400
+    
+    audio_file = request.files['audio_file']
+    language = request.form.get('language', 'en')
+    
+    try:
+        # Create a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
+            audio_file.save(temp_file.name)
+            
+            # Load model
+            processor, model = load_model()
+            
+            # Read audio file
+            audio, sample_rate = sf.read(temp_file.name)
+            
+            # Ensure audio is mono
+            if len(audio.shape) > 1:
+                audio = audio.mean(axis=1)
+            
+            # Resample to 16kHz if necessary
+            if sample_rate != 16000:
+                audio = np.interp(
+                    np.linspace(0, len(audio), int(len(audio) * 16000 / sample_rate)), 
+                    np.arange(len(audio)), 
+                    audio
+                )
+            
+            # Transcribe
+            transcription = transcribe(audio, processor, model)
+            
+            return jsonify({
+                'transcription': transcription,
+                'language': language
+            })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        # Clean up temporary file
+        try:
+            os.unlink(temp_file.name)
+        except:
+            pass
+
+@app.route('/supported_languages', methods=['GET'])
+def get_supported_languages():
+    """Get list of supported translation languages"""
+    return jsonify({
+        'supported_languages': MarianTranslator.supported_languages()
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True)

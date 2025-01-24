@@ -71,6 +71,6 @@ def process_audio(audio_path, to_language, output_file):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     audio_path = "Spryy-App/spryy-app-web/harvard.wav"
-    to_language = "es"  # Change to your desired language code
+    to_language = "es"  
     output_file = "translated_audio.mp3"
     process_audio(audio_path, to_language, output_file)
