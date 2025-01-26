@@ -1,94 +1,156 @@
 import logging
-from typing import List, Dict
+from typing import List, Dict, Callable
 import nltk
-from nltk.translate.bleu_score import corpus_bleu
+from nltk.translate.bleu_score import sentence_bleu
 from nltk.tokenize import word_tokenize
-from translator_V1 import translate_text as v1_translate
-from translator_MT import translate_text as mt_translate
+from jiwer import wer as jiwer_wer
+from nltk.metrics import edit_distance
+from nltk.translate.meteor_score import meteor_score
+import difflib
+import unicodedata
+import re
 
-class TranslationEvaluator:
-    def __init__(self):
-        # Download necessary NLTK resources
-        nltk.download('punkt', quiet=True)
-        self.logger = logging.getLogger(__name__)
+# Download necessary NLTK resources
+nltk.download('punkt', quiet=True)
+nltk.download('wordnet', quiet=True)
+
+def normalize_text(text: str) -> str:
+    """
+    Advanced text normalization for more accurate comparison
+    - Convert to lowercase
+    - Normalize Unicode characters
+    - Remove diacritical marks
+    - Expand common contractions
+    - Normalize punctuation and whitespace
+    """
+    # Unicode normalization
+    text = unicodedata.normalize('NFKD', text)
     
-    def load_test_data(self, file_path: str) -> List[Dict[str, str]]:
-        """
-        Load test data from a JSON or CSV file
-        
-        :param file_path: Path to test data file
-        :return: List of translation test cases
-        """
-        import json
-        
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            self.logger.error(f"Error loading test data: {e}")
-            return []
+    # Remove diacritical marks
+    text = ''.join(c for c in text if not unicodedata.combining(c))
     
-    def evaluate_translation(self, 
-                              source_texts: List[str], 
-                              reference_translations: List[str], 
-                              translator_func):
-        """
-        Evaluate translation quality using multiple metrics
-        
-        :param source_texts: List of source texts
-        :param reference_translations: List of reference (ground truth) translations
-        :param translator_func: Translation function to evaluate
-        :return: Dictionary of evaluation metrics
-        """
-        # Translate texts
-        translated_texts = [translator_func(text) for text in source_texts]
-        
-        # Tokenize for BLEU score
-        reference_tokens = [[word_tokenize(ref.lower())] for ref in reference_translations]
-        candidate_tokens = [word_tokenize(trans.lower()) for trans in translated_texts]
-        
-        # Calculate BLEU score
-        bleu_score = corpus_bleu(reference_tokens, candidate_tokens)
-        
-        # Calculate other simple metrics
-        exact_matches = sum(1 for t, r in zip(translated_texts, reference_translations) if t.strip() == r.strip())
-        
-        return {
-            'bleu_score': bleu_score,
-            'exact_matches': exact_matches,
-            'total_texts': len(source_texts),
-            'match_percentage': (exact_matches / len(source_texts)) * 100
-        }
+    # Lowercase
+    text = text.lower()
     
-    def compare_translators(self, test_data_path: str):
-        """
-        Compare performance of V1 and MarianMT translators
-        
-        :param test_data_path: Path to test data file
-        :return: Comparison results
-        """
-        test_data = self.load_test_data(test_data_path)
-        
-        source_texts = [item['source'] for item in test_data]
-        reference_translations = [item['reference'] for item in test_data]
-        
-        v1_results = self.evaluate_translation(source_texts, reference_translations, v1_translate)
-        mt_results = self.evaluate_translation(source_texts, reference_translations, mt_translate)
-        
-        return {
-            'V1_Translator': v1_results,
-            'MarianMT_Translator': mt_results
-        }
+    # Expand contractions
+    text = expand_contractions(text)
+    
+    # Normalize punctuation
+    text = re.sub(r'[''""]', "'", text)
+    text = re.sub(r'[—–]', '-', text)
+    
+    # Remove extra whitespaces and strip
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
+
+def expand_contractions(text: str) -> str:
+    """Expand common English contractions"""
+    contractions = {
+        "n't": " not",
+        "'m": " am",
+        "'s": " is",
+        "'re": " are",
+        "'ll": " will",
+        "'ve": " have",
+        "'d": " would"
+    }
+    
+    for contraction, expansion in contractions.items():
+        text = text.replace(contraction, expansion)
+    
+    return text
+
+def calculate_enhanced_similarity(ref_text: str, trans_text: str) -> float:
+    """
+    Enhanced similarity calculation considering word order and semantic similarity
+    """
+    normalized_ref = normalize_text(ref_text)
+    normalized_trans = normalize_text(trans_text)
+    
+    # Use SequenceMatcher for base similarity
+    base_similarity = difflib.SequenceMatcher(None, normalized_ref, normalized_trans).ratio()
+    
+    # Additional token-based similarity
+    ref_tokens = word_tokenize(normalized_ref)
+    trans_tokens = word_tokenize(normalized_trans)
+    
+    token_overlap = len(set(ref_tokens) & set(trans_tokens)) / max(len(ref_tokens), len(trans_tokens), 1)
+    
+    # Combine methods
+    return (base_similarity + token_overlap) / 2
+
+def evaluate_translation(source_text: str, 
+                         reference_translation: str, 
+                         translated_text: str):
+    """Enhanced translation quality assessment with advanced scoring"""
+    # Advanced normalization
+    source_text = normalize_text(str(source_text).strip())
+    reference_translation = normalize_text(str(reference_translation).strip())
+    translated_text = normalize_text(str(translated_text).strip())
+
+    reference_tokens = word_tokenize(reference_translation)
+    candidate_tokens = word_tokenize(translated_text)
+    
+    try:
+        # More nuanced BLEU calculation with adjusted weights
+        bleu_score = sentence_bleu(
+            [reference_tokens], 
+            candidate_tokens, 
+            weights=(0.25, 0.25, 0.25, 0.25)  # Balanced n-gram weights
+        )
+    except Exception as e:
+        logging.error(f"BLEU score error: {e}")
+        bleu_score = 0.0
+    
+    similarity_ratio = calculate_enhanced_similarity(reference_translation, translated_text)
+    
+    return {
+        'bleu_score': bleu_score,
+        'similarity_ratio': similarity_ratio,
+        'normalized_reference': reference_translation,
+        'normalized_translation': translated_text
+    }
+    
+def evaluate_speech_to_text(transcription: str, 
+                             reference_transcription: str):
+    """
+    Evaluate speech-to-text quality using multiple metrics with case-insensitive comparison
+    
+    :param transcription: Transcription
+    :param reference_transcription: Reference transcription
+    :return: Dictionary of evaluation metrics
+    """
+    # Convert both texts to lowercase for comparison
+    transcription_lower = transcription.strip().lower()
+    reference_lower = reference_transcription.strip().lower()
+    
+    # Calculate WER score
+    wer_score = jiwer_wer(reference_lower, transcription_lower)
+    
+    # Calculate exact match (case-insensitive)
+    exact_match = 1 if transcription_lower == reference_lower else 0
+    
+    return {
+        'wer_score': wer_score,
+        'exact_match': exact_match
+    }
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    evaluator = TranslationEvaluator()
     
-    # Assume you have a test_translations.json with source, reference translations
-    results = evaluator.compare_translators('test_translations.json')
+    # Test the evaluation functions
+    source_text = "What do you do in your free time?!"
+    reference_translation = "Qu'est-ce que vous aimez faire pendant votre temps libre ?"
     
-    print("Translation Evaluation Results:")
-    for translator, metrics in results.items():
-        print(f"\n{translator}:")
-        for metric, value in metrics.items():
-            print(f"  {metric}: {value}")
+    # For text translation
+    from translator_V1 import translate_text
+    translated_text = translate_text(source_text)
+    
+    text_translation_results = evaluate_translation(
+        source_text, 
+        reference_translation, 
+        translated_text
+    )
+    logging.info("Text Translation Evaluation Results:")
+    logging.info(text_translation_results)

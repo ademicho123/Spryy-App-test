@@ -1,13 +1,15 @@
+import logging
 from flask import Flask, request, jsonify, send_file
 import soundfile as sf
 import numpy as np
 import tempfile
 import os
-
-from translator_MT import MarianTranslator
-from translator_V1 import process_audio, transcribe, load_model
+import traceback
 
 app = Flask(__name__)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 @app.route('/translate/text', methods=['POST'])
 def text_translation():
@@ -22,6 +24,7 @@ def text_translation():
     text = data.get('text')
     source_language = data.get('source_language', 'en')
     target_language = data.get('target_language', 'es')
+    reference_translation = data.get('reference_translation')
 
     if not text:
         return jsonify({'error': 'Missing text'}), 400
@@ -29,97 +32,124 @@ def text_translation():
         return jsonify({'error': 'Missing target language'}), 400
 
     try:
-        translator = MarianTranslator(source_language, target_language)
-        translated_text = translator.translate(text)
-        return jsonify({'translated_text': translated_text})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/translate/speech', methods=['POST'])
-def speech_translation():
-    """Speech translation API"""
-    if 'audio_file' not in request.files:
-        return jsonify({'error': 'No audio file uploaded'}), 400
-    
-    audio_file = request.files['audio_file']
-    source_language = request.form.get('source_language', 'en')
-    target_language = request.form.get('target_language', 'es')
-    
-    try:
-        # Create temporary files
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as input_temp, \
-             tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as output_temp:
-            audio_file.save(input_temp.name)
-            
-            # Process audio translation
-            process_audio(input_temp.name, target_language, output_temp.name)
-            
-            # Return the translated audio file
-            return send_file(output_temp.name, mimetype='audio/mpeg')
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        # Clean up temporary files
-        try:
-            os.unlink(input_temp.name)
-            os.unlink(output_temp.name)
-        except:
-            pass
-
-@app.route('/transcribe/speech', methods=['POST'])
-def speech_to_text():
-    """Speech-to-Text Transcription API"""
-    if 'audio_file' not in request.files:
-        return jsonify({'error': 'No audio file uploaded'}), 400
-    
-    audio_file = request.files['audio_file']
-    language = request.form.get('language', 'en')
-    
-    try:
-        # Create a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
-            audio_file.save(temp_file.name)
-            
-            # Load model
-            processor, model = load_model()
-            
-            # Read audio file
-            audio, sample_rate = sf.read(temp_file.name)
-            
-            # Ensure audio is mono
-            if len(audio.shape) > 1:
-                audio = audio.mean(axis=1)
-            
-            # Resample to 16kHz if necessary
-            if sample_rate != 16000:
-                audio = np.interp(
-                    np.linspace(0, len(audio), int(len(audio) * 16000 / sample_rate)), 
-                    np.arange(len(audio)), 
-                    audio
-                )
-            
-            # Transcribe
-            transcription = transcribe(audio, processor, model)
-            
+        from translator_V1 import translate_text
+        translated_text = translate_text(text, source_language, target_language)
+        
+        if not translated_text:
+            return jsonify({'error': 'Translation failed'}), 500
+        
+        if reference_translation:
+            from evaluation import evaluate_translation
+            evaluation_results = evaluate_translation(
+                source_text=text, 
+                reference_translation=reference_translation, 
+                translated_text=translated_text
+            )
             return jsonify({
-                'transcription': transcription,
-                'language': language
+                'translated_text': translated_text,
+                'evaluation_results': evaluation_results
+            })
+        else:
+            return jsonify({
+                'translated_text': translated_text
             })
     except Exception as e:
+        logging.error(f"Translation error: {str(e)}")
         return jsonify({'error': str(e)}), 500
-    finally:
-        # Clean up temporary file
+
+@app.route('/transcribe/speech', methods=['POST'])
+def speech_to_text_and_translation():
+    audio_file = request.files.get('audio_file')
+    source_language = request.form.get('source_language', 'en')
+    target_language = request.form.get('target_language', 'es')
+    reference_transcription = request.form.get('reference_transcription')
+    reference_translation = request.form.get('reference_translation')
+
+    if not audio_file:
+        return jsonify({'error': 'No audio file uploaded'}), 400
+
+    temp_file = None
+    try:
+        # Create temp file with explicit .wav extension
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        audio_file.save(temp_file.name)
+        logger.debug(f"Saved temp audio file: {temp_file.name}")
+
+        # Verify file was saved correctly
+        if os.path.getsize(temp_file.name) == 0:
+            raise ValueError("Uploaded audio file is empty")
+
+        from translator_V1 import load_model, transcribe, translate_text
+        from evaluation import evaluate_speech_to_text, evaluate_translation
+
+        # Step 1: Transcribe Audio
+        model = load_model()  # load_model() returns a single model object
+        logger.debug("Whisper model loaded successfully")
+
+        # Read audio file with detailed error handling
         try:
-            os.unlink(temp_file.name)
-        except:
-            pass
+            audio, sample_rate = sf.read(temp_file.name)
+            logger.debug(f"Audio read - Shape: {audio.shape}, Sample Rate: {sample_rate}")
+        except Exception as e:
+            logger.error(f"Audio read error: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': f'Audio read failed: {str(e)}'}), 400
 
-@app.route('/supported_languages', methods=['GET'])
-def get_supported_languages():
-    """Get list of supported translation languages"""
-    return jsonify({
-        'supported_languages': MarianTranslator.supported_languages()
-    })
+        # Handle multi-channel audio
+        audio = audio.mean(axis=1) if len(audio.shape) > 1 else audio
+        logger.debug(f"Audio normalized. New shape: {audio.shape}")
 
+        # Resample if needed
+        audio = np.interp(
+            np.linspace(0, len(audio), int(len(audio) * 16000 / sample_rate)),
+            np.arange(len(audio)),
+            audio
+        ) if sample_rate != 16000 else audio
+        logger.debug(f"Audio resampled. Final shape: {audio.shape}")
+
+        # Transcription with detailed logging
+        transcription = transcribe(audio, model)
+        if not transcription:
+            return jsonify({'error': 'Transcription failed'}), 500
+        logger.info(f"Transcription: {transcription}")
+
+        # Step 2: Translate Transcription
+        translated_text = translate_text(transcription, source_language, target_language)
+        logger.info(f"Translation: {translated_text}")
+
+        # Step 3-4: Evaluation (if references provided)
+        response = {
+            'transcription': transcription,
+            'translation': translated_text,
+        }
+
+        if reference_transcription:
+            response['transcription_evaluation'] = evaluate_speech_to_text(
+                transcription, reference_transcription
+            )
+
+        if reference_translation:
+            response['translation_evaluation'] = evaluate_translation(
+                source_text=transcription,
+                reference_translation=reference_translation,
+                translated_text=translated_text
+            )
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Comprehensive error: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        # Ensure temp file is always deleted
+        if temp_file and os.path.exists(temp_file.name):
+            try:
+                os.unlink(temp_file.name)
+                logger.debug("Temporary file deleted successfully")
+            except Exception as e:
+                logger.error(f"Failed to delete temp file: {e}")
+                
 if __name__ == '__main__':
     app.run(debug=True)

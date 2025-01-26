@@ -17,3 +17,5 @@ sentencepiece==0.1.99
 
 # Evaluation requirements
 nltk
+jiwer
+pesq
