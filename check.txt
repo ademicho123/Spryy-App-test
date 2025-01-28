@@ -135,3 +135,6 @@ Conclusion
 For cloning or voice or prosody
 
 - facebook/seamless-m4t-large
+
+
+Test LLaMAX/LLaMAX3-8B for translation too
