@@ -120,3 +120,18 @@ Score to interprete
         "wer_score": 1.0
     },
     "translated_text": "Que faites-vous dans votre temps libre ?"
+
+
+
+Intro
+Features
+Tech stack
+Project structure
+Functionality
+Challenges and Solutions
+Conclusion
+
+
+For cloning or voice or prosody
+
+- facebook/seamless-m4t-large

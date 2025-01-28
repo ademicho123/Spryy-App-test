@@ -38,6 +38,10 @@ def text_translation():
         if not translated_text:
             return jsonify({'error': 'Translation failed'}), 500
         
+        response = {
+            'translated_text': translated_text
+        }
+        
         if reference_translation:
             from evaluation import evaluate_translation
             evaluation_results = evaluate_translation(
@@ -45,14 +49,10 @@ def text_translation():
                 reference_translation=reference_translation, 
                 translated_text=translated_text
             )
-            return jsonify({
-                'translated_text': translated_text,
-                'evaluation_results': evaluation_results
-            })
-        else:
-            return jsonify({
-                'translated_text': translated_text
-            })
+            response['evaluation_results'] = evaluation_results
+        
+        return jsonify(response)
+    
     except Exception as e:
         logging.error(f"Translation error: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -83,7 +83,7 @@ def speech_to_text_and_translation():
         from evaluation import evaluate_speech_to_text, evaluate_translation
 
         # Step 1: Transcribe Audio
-        model = load_model()  # load_model() returns a single model object
+        model = load_model()
         logger.debug("Whisper model loaded successfully")
 
         # Read audio file with detailed error handling

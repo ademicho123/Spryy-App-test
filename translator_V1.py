@@ -1,6 +1,6 @@
 import logging
 import torch
-from transformers import MarianMTModel, MarianTokenizer, AutoModelForSeq2SeqLM, AutoTokenizer
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 from gtts import gTTS
 import soundfile as sf
 import numpy as np
@@ -100,6 +100,8 @@ LANG_MAP = {
     'en': 'eng_Latn',
     'es': 'spa_Latn',
     'fr': 'fra_Latn',
+    'el': 'gre_Latn',
+    'yor': 'yor_Latn',
     # Add more language codes as needed
 }
 

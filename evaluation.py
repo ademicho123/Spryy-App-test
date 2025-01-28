@@ -14,103 +14,89 @@ import re
 nltk.download('punkt', quiet=True)
 nltk.download('wordnet', quiet=True)
 
-def normalize_text(text: str) -> str:
-    """
-    Advanced text normalization for more accurate comparison
-    - Convert to lowercase
-    - Normalize Unicode characters
-    - Remove diacritical marks
-    - Expand common contractions
-    - Normalize punctuation and whitespace
-    """
-    # Unicode normalization
-    text = unicodedata.normalize('NFKD', text)
-    
-    # Remove diacritical marks
-    text = ''.join(c for c in text if not unicodedata.combining(c))
-    
-    # Lowercase
+def normalize_text(text):
+    """Advanced text normalization"""
+    # Convert to lowercase
     text = text.lower()
     
-    # Expand contractions
-    text = expand_contractions(text)
+    # Remove accents
+    text = ''.join(
+        char for char in unicodedata.normalize('NFKD', text)
+        if not unicodedata.combining(char)
+    )
     
-    # Normalize punctuation
-    text = re.sub(r'[''""]', "'", text)
-    text = re.sub(r'[—–]', '-', text)
-    
-    # Remove extra whitespaces and strip
-    text = re.sub(r'\s+', ' ', text).strip()
+    # Normalize specific characters and punctuation
+    text = re.sub(r'[\'"`''""()]', '', text)  # Remove various quote types
+    text = re.sub(r'[?!.,;:]', ' ', text)    # Replace punctuation with space
+    text = re.sub(r'\s+', ' ', text).strip() # Normalize whitespace
     
     return text
 
-def expand_contractions(text: str) -> str:
-    """Expand common English contractions"""
-    contractions = {
-        "n't": " not",
-        "'m": " am",
-        "'s": " is",
-        "'re": " are",
-        "'ll": " will",
-        "'ve": " have",
-        "'d": " would"
+def compute_advanced_translation_score(reference, translation):
+    """
+    Compute a comprehensive translation quality score
+    
+    Combines multiple metrics:
+    - METEOR score (more semantically aware)
+    - Normalized token-level similarity
+    - Sequence matching
+    """
+    # Normalize texts
+    norm_ref = normalize_text(reference)
+    norm_trans = normalize_text(translation)
+    
+    # Tokenize normalized texts
+    ref_tokens = word_tokenize(norm_ref)
+    trans_tokens = word_tokenize(norm_trans)
+    
+    # METEOR score (more semantically sensitive than BLEU)
+    try:
+        meteor = meteor_score([ref_tokens], trans_tokens)
+    except Exception:
+        meteor = 0.0
+    
+    # Sequence similarity
+    sequence_sim = difflib.SequenceMatcher(None, norm_ref, norm_trans).ratio()
+    
+    # Token overlap
+    unique_ref = set(ref_tokens)
+    unique_trans = set(trans_tokens)
+    token_overlap = len(unique_ref & unique_trans) / max(len(unique_ref), len(unique_trans), 1)
+    
+    # Classic BLEU score with more forgiving weights
+    try:
+        bleu = sentence_bleu(
+            [ref_tokens], 
+            trans_tokens, 
+            weights=(0.5, 0.3, 0.2, 0)  # Less strict n-gram weights
+        )
+    except Exception:
+        bleu = 0.0
+    
+    # Combine metrics with weighted average
+    combined_score = (
+        0.4 * meteor +  # METEOR score
+        0.3 * sequence_sim +  # Sequence similarity
+        0.2 * token_overlap +  # Token overlap
+        0.1 * bleu  # BLEU score
+    )
+    
+    return {
+        'bleu_score': bleu,
+        'meteor_score': meteor,
+        'semantic_similarity': combined_score,
+        'normalized_reference': norm_ref,
+        'normalized_translation': norm_trans
     }
-    
-    for contraction, expansion in contractions.items():
-        text = text.replace(contraction, expansion)
-    
-    return text
-
-def calculate_enhanced_similarity(ref_text: str, trans_text: str) -> float:
-    """
-    Enhanced similarity calculation considering word order and semantic similarity
-    """
-    normalized_ref = normalize_text(ref_text)
-    normalized_trans = normalize_text(trans_text)
-    
-    # Use SequenceMatcher for base similarity
-    base_similarity = difflib.SequenceMatcher(None, normalized_ref, normalized_trans).ratio()
-    
-    # Additional token-based similarity
-    ref_tokens = word_tokenize(normalized_ref)
-    trans_tokens = word_tokenize(normalized_trans)
-    
-    token_overlap = len(set(ref_tokens) & set(trans_tokens)) / max(len(ref_tokens), len(trans_tokens), 1)
-    
-    # Combine methods
-    return (base_similarity + token_overlap) / 2
 
 def evaluate_translation(source_text: str, 
                          reference_translation: str, 
                          translated_text: str):
-    """Enhanced translation quality assessment with advanced scoring"""
-    # Advanced normalization
-    source_text = normalize_text(str(source_text).strip())
-    reference_translation = normalize_text(str(reference_translation).strip())
-    translated_text = normalize_text(str(translated_text).strip())
-
-    reference_tokens = word_tokenize(reference_translation)
-    candidate_tokens = word_tokenize(translated_text)
-    
-    try:
-        # More nuanced BLEU calculation with adjusted weights
-        bleu_score = sentence_bleu(
-            [reference_tokens], 
-            candidate_tokens, 
-            weights=(0.25, 0.25, 0.25, 0.25)  # Balanced n-gram weights
-        )
-    except Exception as e:
-        logging.error(f"BLEU score error: {e}")
-        bleu_score = 0.0
-    
-    similarity_ratio = calculate_enhanced_similarity(reference_translation, translated_text)
-    
-    return {
-        'bleu_score': bleu_score,
-        'similarity_ratio': similarity_ratio,
-        'normalized_reference': reference_translation,
-        'normalized_translation': translated_text
-    }
+    """Comprehensive translation quality assessment"""
+    return compute_advanced_translation_score(
+        reference_translation, 
+        translated_text
+    )
     
 def evaluate_speech_to_text(transcription: str, 
                              reference_transcription: str):
